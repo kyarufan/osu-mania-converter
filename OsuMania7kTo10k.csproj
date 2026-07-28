@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>OsuMania7kTo10k</AssemblyName>
+    <RootNamespace>OsuMania7kTo10k</RootNamespace>
+    <ApplicationIcon></ApplicationIcon>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <AssemblyName>Narae's Converter</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OsuMemoryDataProvider" Version="0.11.1" />
+    <PackageReference Include="ProcessMemoryDataFinder" Version="0.9.0" />
+  </ItemGroup>
+
+</Project>
