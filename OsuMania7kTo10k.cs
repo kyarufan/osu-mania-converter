@@ -15,7 +15,7 @@ using OsuMemoryDataProvider;   // NuGet: OsuMemoryDataProvider (+ ProcessMemoryD
 public class MainForm : Form
 {
     private Button btnOpen, btnConvert;
-    private Label lblStatus, lblFile, lblUsage;
+    private Label lblStatus, lblFile, lblUsage;a
     private RadioButton rbKey8, rbKey10;                 // 타깃 키 (그룹1)
     private RadioButton rbDplain, rbDdense, rbDmore;     // 밀도 (그룹2)
     private RadioButton rbLayOld, rbLayNew;              // 8→10 배치 타입 (그룹3)
@@ -940,8 +940,8 @@ public class MainForm : Form
         //    - 박마다 시프트를 바꾸되(변화 ↑), 직전 박과 연타(잭)가 생기면 그 박만 유지.
         //      단, LN 끝 → 단/롱노트 시작은 연타가 아님(누르다 떼고 누르는 것).
         //    - 동시에 잡힌 LN이 있는 동안만 시프트 고정(겹침 방지). 연속 LN끼리는 자유.
-        //    - 자유 전환 시에도 LN 꼬리에 다른 노트가 떨어지는 겹침은 명시적으로 차단
-        //      (같은 소스 컬럼의 진짜 체인은 허용).
+        //    - 자유 전환 시에도 LN 꼬리에 다른 노트가 떨어지는 겹침은 명시적으로 차단.
+        //      꼬리 시각 == 다음 노트 시작 시각(맞닿음)도 소스 컬럼과 무관하게 금지.
         // 채움 모드용: 배치된 실노트(컬럼별 점유)와 추가생성 후보
         // 빈칸 컬럼은 손 안에서만 생기고(왼손 0~4 / 오른손 5~9) 손끼리 겹치지 않아 손별 독립 검증 가능
         const int LockMinMs = 100;   // 이 길이 미만 LN은 단노트로 간주 → 시프트 락 안 걸림(흐름 유지)
@@ -963,6 +963,8 @@ public class MainForm : Form
             var placedLN = new List<(int c10, int src8, int start, int end)>();  // 배치된 LN들
             int lnShift = baseA;             // 현재 동시에 잡혀 있는 LN들의 공유 레이아웃
             int prevShift = baseA;
+            var lastUsed = new int[5];       // 레이아웃별 마지막 사용 순번(New 배치의 라운드로빈용)
+            int useSeq = 0;
             // 컬럼별 '마지막 릴리즈'(탭=시작, LN=끝)와 소스 c8. 직전 박 경계 + purge된 직전 LN까지 포함.
             var lastRel = new Dictionary<int, (int end, int c8)>();
 
@@ -981,8 +983,8 @@ public class MainForm : Form
                 foreach (var L in placedLN) if (L.end > gStart && (L.end - L.start) >= LockMinMs) { hasActive = true; break; }
                 int other = (prevShift == baseA) ? baseB : baseA;
 
-                // 겹침 안전(체인 인지): 범위 [bi,bj)를 placedLN 스냅샷과 대조. 같은 col10 내부 겹침 금지,
-                //   꼬리 접촉은 소스가 다를 때만 금지.
+                // 겹침 안전: 범위 [bi,bj)를 placedLN 스냅샷과 대조. 같은 col10 안에서
+                //   내부 겹침도, 꼬리↔머리 맞닿음도 전부 금지.
                 bool SafeRange(int bi, int bj, int s, List<(int c10, int src8, int start, int end)> pLN)
                 {
                     for (int k = bi; k < bj; k++)
@@ -993,14 +995,16 @@ public class MainForm : Form
                         foreach (var L in pLN)
                         {
                             if (L.c10 != c10) continue;
-                            if (t < L.end && te > L.start) return false;                 // 내부 겹침
-                            if (t == L.end && handObjs[k].col8 != L.src8) return false;   // 꼬리 접촉(코인시던스)
+                            if (t < L.end && te > L.start) return false;   // 내부 겹침
+                            if (t == L.end) return false;                  // LN 꼬리에 노트 시작(단노트·LN 머리 모두 금지)
+                            if (te == L.start) return false;               // 이 LN의 꼬리에 기존 노트 시작
                         }
                     }
                     return true;
                 }
                 // 잭 안전: 범위 [bi,bj)의 모든 노트를 lastRel 스냅샷(lr)과 대조.
-                //   - 소스 c8 같으면 원본 잭 보존(허용) / 새시작==직전끝(체인) 허용 / 그 외 jackGap 이내 재타 금지
+                //   - 소스 c8 같으면 원본 잭 보존(허용) / 그 외 jackGap 이내 재타 금지
+                //     (LN 꼬리 맞닿음은 SafeRange가 이미 막음)
                 bool JackFreeRange(int bi, int bj, int s, Dictionary<int, (int end, int c8)> lr)
                 {
                     for (int k = bi; k < bj; k++)
@@ -1082,6 +1086,27 @@ public class MainForm : Form
                     else if ((alt2 = FirstClean(lnShift, altLn)) >= 0) shift = alt2;
                     else                                          shift = lnShift;
                 }
+                else if (wideLayout)
+                {
+                    // New 배치: 쓸 수 있는 레이아웃(겹침·잭 안전) 중 '가장 오래 안 쓴' 것 → 5가지가 고르게 돌아감.
+                    //   지속 LN을 시작하는 박은 다음 박이 잠기므로, 1박 룩어헤드 페널티가 최소인 것들로 먼저 거른다.
+                    var clean = new List<int>();
+                    for (int g = 0; g < 5; g++) if (Safe(g) && JackFree(g)) clean.Add(g);
+                    if (clean.Count == 0)
+                    {
+                        shift = Safe(other) ? other : prevShift;   // 전부 막히면 예전 폴백(겹침만 회피)
+                    }
+                    else
+                    {
+                        if (startsLong && clean.Count > 1)
+                        {
+                            int best = clean.Min(g => NextJackPenalty(g));
+                            clean = clean.Where(g => NextJackPenalty(g) == best).ToList();
+                        }
+                        shift = clean[0];
+                        foreach (int g in clean) if (lastUsed[g] < lastUsed[shift]) shift = g;
+                    }
+                }
                 else
                 {
                     bool oClean = Safe(other) && JackFree(other);
@@ -1099,6 +1124,7 @@ public class MainForm : Form
                     else if (Safe(other)) shift = other;       // 겹침만 피함
                     else                  shift = prevShift;
                 }
+                lastUsed[shift] = ++useSeq;   // 라운드로빈 기준 갱신(락 걸린 박도 포함)
 
                 bool startedLongLN = false;
 
@@ -1152,7 +1178,7 @@ public class MainForm : Form
         // 3.5) 채움 노트 검증·확정: 같은 컬럼에서 겹침·잭이면 그 노트는 버림
         if (fill && addCands.Count > 0)
         {
-            // 컬럼별 점유 구간(실노트 + 확정된 추가노트). LN끝↔머리 맞닿음(체인)은 잭 아님.
+            // 컬럼별 점유 구간(실노트 + 확정된 추가노트). LN끝↔머리 맞닿음도 금지.
             var occ = new Dictionary<int, List<(int s, int e)>>();
             foreach (var p in placedAll)
             {
@@ -1165,14 +1191,14 @@ public class MainForm : Form
                 foreach (var n in lst)
                 {
                     if (start == n.s) return true;                 // 같은 컬럼·같은 시각 = 스택
-                    if (start < n.e && n.s < end) return true;     // 내부 겹침(맞닿음은 허용)
+                    if (start < n.e && n.s < end) return true;     // 내부 겹침
+                    if (start == n.e || end == n.s) return true;   // LN 꼬리↔머리 맞닿음도 금지
                     int gap = Math.Abs(n.s - start);
                     // 채움 잭 기준 = 모드별 fillGapMult박 (Dense=1박/성김, More Dense=0.375박/빽빽).
                     //   시프트용 JackGapAt(0.375)와는 분리.
                     if (gap > 0 && gap <= BeatMsAt(start) * fillGapMult)
                     {
-                        bool chain = (start == n.e) || (end == n.s);   // LN 꼬리↔머리 체인은 예외
-                        if (!chain) return true;                        // 그 외 근접 재타 = 잭
+                        return true;                                    // 근접 재타 = 잭
                     }
                 }
                 return false;
