@@ -18,13 +18,14 @@ public class MainForm : Form
     private Label lblStatus, lblFile, lblUsage;
     private RadioButton rbKey8, rbKey10;                 // 타깃 키 (그룹1)
     private RadioButton rbDplain, rbDdense, rbDmore;     // 밀도 (그룹2)
+    private RadioButton rbLayOld, rbLayNew;              // 8→10 배치 타입 (그룹3)
     private string loadedFilePath = null;
 
     public MainForm()
     {
         Text = "Converter";
-        Size = new Size(580, 300);
-        MinimumSize = new Size(400, 260);
+        Size = new Size(700, 300);
+        MinimumSize = new Size(460, 260);
         Font = new Font("Segoe UI", 9.5f);
         BackColor = Color.FromArgb(30, 30, 34);
         ForeColor = Color.FromArgb(220, 220, 230);
@@ -98,7 +99,9 @@ public class MainForm : Form
         var grpKey = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight,
                                            WrapContents = false, Margin = new Padding(0, 0, 8, 0), BackColor = Color.Transparent };
         var grpDensity = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight,
-                                               WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent };
+                                               WrapContents = false, Margin = new Padding(0, 0, 8, 0), BackColor = Color.Transparent };
+        var grpLayout = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight,
+                                              WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent };
         rbKey8   = MakeRadio("8K");
         rbKey10  = MakeRadio("10K");
         rbKey10.Checked = true;                 // 기본 타깃 10K
@@ -113,10 +116,23 @@ public class MainForm : Form
         grpDensity.Controls.Add(rbDdense);
         grpDensity.Controls.Add(rbDmore);
 
+        // 8→10 배치 타입: Old = 기존 0123/1234 두 가지만, New = 빈칸 위치 0~4 다섯 가지
+        rbLayOld = MakeRadio("Old 배치");
+        rbLayNew = MakeRadio("New 배치");
+        rbLayNew.Checked = true;                // 기본 New
+        var tip = new ToolTip();
+        tip.SetToolTip(rbLayOld, "8→10 손별 배치를 기존 0123 / 1234 두 가지로만 (예전 결과 그대로)");
+        tip.SetToolTip(rbLayNew, "빈칸이 0~4 어디든 올 수 있는 5가지 배치 — 겹침·잭으로 기존 두 배치가 막힐 때 사용");
+        grpLayout.Controls.Add(rbLayOld);
+        grpLayout.Controls.Add(rbLayNew);
+
+        Label Sep() => new Label { Text = "|", AutoSize = true, ForeColor = Color.FromArgb(90, 90, 100),
+                                   Margin = new Padding(0, 3, 8, 0), Font = new Font("Segoe UI", 10f) };
         panelMode.Controls.Add(grpKey);
-        panelMode.Controls.Add(new Label { Text = "|", AutoSize = true, ForeColor = Color.FromArgb(90, 90, 100),
-                                           Margin = new Padding(0, 3, 8, 0), Font = new Font("Segoe UI", 10f) });
+        panelMode.Controls.Add(Sep());
         panelMode.Controls.Add(grpDensity);
+        panelMode.Controls.Add(Sep());
+        panelMode.Controls.Add(grpLayout);
 
         Controls.Add(panelMode);
         Controls.Add(lblUsage);
@@ -224,9 +240,10 @@ public class MainForm : Form
                 converted = ConvertLines(lines, bpm);   // 7 → 8
                 if (tgt10)
                 {
-                    if (dense)     converted = Convert8To10(converted, bpm, true, 1.01);
-                    else if (more) converted = Convert8To10(converted, bpm, true, 0.375);
-                    else           converted = Convert8To10(converted, bpm, false);
+                    bool wide = rbLayNew.Checked;   // New 배치: 빈칸 0~4 다섯 가지 / Old: 기존 두 가지만
+                    if (dense)     converted = Convert8To10(converted, bpm, true, 1.01, wide);
+                    else if (more) converted = Convert8To10(converted, bpm, true, 0.375, wide);
+                    else           converted = Convert8To10(converted, bpm, false, 1.01, wide);
                 }
                 // 8K 타깃: 7→8 그대로(밀도 무시 — 7→8은 채움 없음)
             }
@@ -819,7 +836,8 @@ public class MainForm : Form
     //   같은 박 안의 노트는 같은 시프트를 공유.
     //   매 박 시프트를 바꾸되, 직전 박 경계와 연타(잭)가 생기면 그 박만 유지.
     //   LN(롱노트) 진행 중인 손은 그 LN이 끝날 때까지 시프트 고정 → 겹침 방지(최우선).
-    private List<string> Convert8To10(List<string> lines, double bpm, bool fill = false, double fillGapMult = 1.01)
+    // wideLayout: true = 빈칸(gap) 0~4 다섯 가지 배치 사용 / false = 기존 0123·1234 두 가지만(예전 동작)
+    private List<string> Convert8To10(List<string> lines, double bpm, bool fill = false, double fillGapMult = 1.01, bool wideLayout = true)
     {
         // 모든 uninherited(빨간선) 타이밍포인트 = (offset, beatMs). BPM 변경 맵 대응.
         var tps = new List<(double off, double bm)>();
@@ -925,20 +943,26 @@ public class MainForm : Form
         //    - 자유 전환 시에도 LN 꼬리에 다른 노트가 떨어지는 겹침은 명시적으로 차단
         //      (같은 소스 컬럼의 진짜 체인은 허용).
         // 채움 모드용: 배치된 실노트(컬럼별 점유)와 추가생성 후보
-        // 빈칸 컬럼 0/4(왼손), 5/9(오른손)은 손이 겹치지 않아 손별 독립 검증 가능
+        // 빈칸 컬럼은 손 안에서만 생기고(왼손 0~4 / 오른손 5~9) 손끼리 겹치지 않아 손별 독립 검증 가능
         const int LockMinMs = 100;   // 이 길이 미만 LN은 단노트로 간주 → 시프트 락 안 걸림(흐름 유지)
         var placedAll = new List<(int c10, int start, int end)>();
         var addCands  = new List<(int c10, int start, int end, string[] parts)>();
 
         for (int hand = 0; hand < 2; hand++)
         {
-            int lo = hand;   // 후보 시프트: 왼손 {0,1}, 오른손 {1,2}
+            // 레이아웃 = '비는 칸(gap)'의 손 기준 로컬 위치(0~4). 나머지 4칸에 8K 4열을 순서대로 넣는다.
+            //   gap4 = 0123(기존 shift0) / gap0 = 1234(기존 shift1)  ← 기본 후보, 우선순위 종전과 동일
+            //   gap1 = 0234 / gap3 = 0124 / gap2 = 0134             ← 기본 둘이 다 막혔을 때만 쓰는 대체 레이아웃
+            int hb8  = hand * 4;   // 이 손의 8K 첫 열 (0 / 4)
+            int hb10 = hand * 5;   // 이 손의 10K 첫 열 (0 / 5)
+            int Map(int col8, int g) { int l = col8 - hb8; return hb10 + (l < g ? l : l + 1); }
+            const int baseA = 4, baseB = 0;   // 기존 두 레이아웃
             var handObjs = objs.Where(o => (o.col8 <= 3 ? 0 : 1) == hand)
                                .OrderBy(o => o.time).ThenBy(o => o.col8).ToList();
 
             var placedLN = new List<(int c10, int src8, int start, int end)>();  // 배치된 LN들
-            int lnShift = lo;                // 현재 동시에 잡혀 있는 LN들의 공유 시프트
-            int prevShift = lo;
+            int lnShift = baseA;             // 현재 동시에 잡혀 있는 LN들의 공유 레이아웃
+            int prevShift = baseA;
             // 컬럼별 '마지막 릴리즈'(탭=시작, LN=끝)와 소스 c8. 직전 박 경계 + purge된 직전 LN까지 포함.
             var lastRel = new Dictionary<int, (int end, int c8)>();
 
@@ -955,7 +979,7 @@ public class MainForm : Form
                 // 락 트리거에서 제외 → 흐름 유지. (LN 자체는 그대로 두고 Safe가 겹침은 계속 차단)
                 bool hasActive = false;
                 foreach (var L in placedLN) if (L.end > gStart && (L.end - L.start) >= LockMinMs) { hasActive = true; break; }
-                int other = (prevShift == lo) ? lo + 1 : lo;
+                int other = (prevShift == baseA) ? baseB : baseA;
 
                 // 겹침 안전(체인 인지): 범위 [bi,bj)를 placedLN 스냅샷과 대조. 같은 col10 내부 겹침 금지,
                 //   꼬리 접촉은 소스가 다를 때만 금지.
@@ -963,7 +987,7 @@ public class MainForm : Form
                 {
                     for (int k = bi; k < bj; k++)
                     {
-                        int c10 = handObjs[k].col8 + s;
+                        int c10 = Map(handObjs[k].col8, s);
                         int t = handObjs[k].time;
                         int te = handObjs[k].isLN ? handObjs[k].endTime : handObjs[k].time;
                         foreach (var L in pLN)
@@ -981,7 +1005,7 @@ public class MainForm : Form
                 {
                     for (int k = bi; k < bj; k++)
                     {
-                        int c10 = handObjs[k].col8 + s;
+                        int c10 = Map(handObjs[k].col8, s);
                         if (lr.TryGetValue(c10, out var pr))
                         {
                             int delta = handObjs[k].time - pr.end;   // 직전 릴리즈→이 노트 시작
@@ -1000,7 +1024,7 @@ public class MainForm : Form
                     var lr = new Dictionary<int, (int end, int c8)>(lastRel);
                     for (int k = i; k < j; k++)
                     {
-                        int c10 = handObjs[k].col8 + s;
+                        int c10 = Map(handObjs[k].col8, s);
                         int relEnd = handObjs[k].isLN ? handObjs[k].endTime : handObjs[k].time;
                         if (!lr.TryGetValue(c10, out var ex) || relEnd >= ex.end) lr[c10] = (relEnd, handObjs[k].col8);
                     }
@@ -1010,7 +1034,7 @@ public class MainForm : Form
                 {
                     var p = new List<(int c10, int src8, int start, int end)>(placedLN);
                     for (int k = i; k < j; k++)
-                        if (handObjs[k].isLN) p.Add((handObjs[k].col8 + s, handObjs[k].col8, handObjs[k].time, handObjs[k].endTime));
+                        if (handObjs[k].isLN) p.Add((Map(handObjs[k].col8, s), handObjs[k].col8, handObjs[k].time, handObjs[k].endTime));
                     return p;
                 }
 
@@ -1033,20 +1057,36 @@ public class MainForm : Form
                     return JackFreeRange(j, nj, s, SimLastRel(s)) ? 0 : 1;
                 }
 
+                // 기본 후보(0123/1234)가 다 막혔을 때만 찾는 대체 레이아웃: 겹침·잭 둘 다 안전한 첫 번째.
+                //   가운데가 뚫리는 gap2(0134)는 손 모양을 제일 많이 흐트러뜨려서 마지막에 본다.
+                int FirstClean(int skipA, int skipB)
+                {
+                    if (!wideLayout) return -1;   // Old 배치: 대체 레이아웃 없음 → 아래 예전 폴백 그대로
+                    foreach (int g in new[] { baseA, baseB, 1, 3, 2 })
+                    {
+                        if (g == skipA || g == skipB) continue;
+                        if (Safe(g) && JackFree(g)) return g;
+                    }
+                    return -1;
+                }
+
                 int shift;
                 if (hasActive)
                 {
                     // 동시 LN 잡힌 동안은 lnShift 고정이 원칙. 단 그게 잭을 만들고
-                    //   대안 시프트가 겹침 안전 + 무잭이면 대안으로 (락이 잭예방을 건너뛰지 않게).
-                    int altLn = (lnShift == lo) ? lo + 1 : lo;
+                    //   대안 레이아웃이 겹침 안전 + 무잭이면 대안으로 (락이 잭예방을 건너뛰지 않게).
+                    int altLn = (lnShift == baseA) ? baseB : baseA;
+                    int alt2;
                     if      (Safe(lnShift) && JackFree(lnShift)) shift = lnShift;
                     else if (Safe(altLn)   && JackFree(altLn))   shift = altLn;
+                    else if ((alt2 = FirstClean(lnShift, altLn)) >= 0) shift = alt2;
                     else                                          shift = lnShift;
                 }
                 else
                 {
                     bool oClean = Safe(other) && JackFree(other);
                     bool pClean = Safe(prevShift) && JackFree(prevShift);
+                    int alt2;
                     if (startsLong && oClean && pClean && other != prevShift)
                     {
                         // 둘 다 깨끗 + 이 박이 지속 LN 시작 → 다음(잠길) 박이 잭 안 나는 쪽 선택.
@@ -1055,23 +1095,17 @@ public class MainForm : Form
                     }
                     else if (oClean)      shift = other;       // 기본: 안전+무잭이면 flip
                     else if (pClean)      shift = prevShift;   // 그다음 유지
+                    else if ((alt2 = FirstClean(other, prevShift)) >= 0) shift = alt2;   // 대체 레이아웃으로 잭 회피
                     else if (Safe(other)) shift = other;       // 겹침만 피함
                     else                  shift = prevShift;
                 }
 
                 bool startedLongLN = false;
 
-                // 채움: 이 박/손의 시프트에 따라 빈칸 컬럼과 트리거 컬럼 결정
-                //   왼손  shift0(0123)→빈4·트리거8col3 / shift1(1234)→빈0·트리거8col0
-                //   오른손 shift1(5678)→빈9·트리거8col7 / shift2(6789)→빈5·트리거8col4
-                int triggerC8 = -1, gapC10 = -1;
-                if (hand == 0) { if (shift == 0) { triggerC8 = 3; gapC10 = 4; } else { triggerC8 = 0; gapC10 = 0; } }
-                else           { if (shift == 1) { triggerC8 = 7; gapC10 = 9; } else { triggerC8 = 4; gapC10 = 5; } }
-
                 for (int k = i; k < j; k++)
                 {
                     var o = handObjs[k];
-                    int c10 = o.col8 + shift;
+                    int c10 = Map(o.col8, shift);
                     o.parts[0] = ((int)((c10 + 0.5) * 512 / 10)).ToString();
                     int relEnd = o.isLN ? o.endTime : o.time;
                     if (fill) placedAll.Add((c10, o.time, relEnd));
@@ -1079,13 +1113,32 @@ public class MainForm : Form
                     if (!lastRel.TryGetValue(c10, out var ex) || relEnd >= ex.end) lastRel[c10] = (relEnd, o.col8);
                     if (o.isLN) { placedLN.Add((c10, o.col8, o.time, o.endTime));
                                   if (o.endTime - o.time >= LockMinMs) startedLongLN = true; }
+                }
 
-                    // 채움 후보: 트리거 노트 옆 빈칸에 같은 시각·같은 타입(LN이면 같은 길이)으로 복제
-                    if (fill && o.col8 == triggerC8)
+                // 채움 후보: 빈칸(gap) 바로 옆 노트를 같은 시각·같은 타입(LN이면 같은 길이)으로 빈칸에 복제.
+                //   이웃 우선순위는 손 안쪽(로컬 2번) 쪽 → 막히면 반대쪽.
+                //   gap0→1 / gap1→2,0 / gap3→2,4 / gap4→3 / gap2는 1·3이 대칭이라 건반 중앙 쪽(왼손3·오른손1) 먼저.
+                if (fill)
+                {
+                    int gapC10 = hb10 + shift;
+                    int[] nbOrder;
+                    if      (shift == 0) nbOrder = new[] { 1 };
+                    else if (shift == 4) nbOrder = new[] { 3 };
+                    else if (shift == 1) nbOrder = new[] { 2, 0 };
+                    else if (shift == 3) nbOrder = new[] { 2, 4 };
+                    else                 nbOrder = (hand == 0) ? new[] { 3, 1 } : new[] { 1, 3 };
+
+                    foreach (int nb in nbOrder)
                     {
-                        var tp = (string[])o.parts.Clone();
-                        tp[0] = ((int)((gapC10 + 0.5) * 512 / 10)).ToString();
-                        addCands.Add((gapC10, o.time, relEnd, tp));
+                        int srcC8 = hb8 + (nb < shift ? nb : nb - 1);   // 그 로컬 칸을 쓰는 8K 열
+                        for (int k = i; k < j; k++)
+                        {
+                            var o = handObjs[k];
+                            if (o.col8 != srcC8) continue;
+                            var tp = (string[])o.parts.Clone();
+                            tp[0] = ((int)((gapC10 + 0.5) * 512 / 10)).ToString();
+                            addCands.Add((gapC10, o.time, o.isLN ? o.endTime : o.time, tp));
+                        }
                     }
                 }
                 // 지속 홀드(>=LockMinMs)가 '새로' 시작될 때만 락 기준 갱신 → 체인 경계에서 flip 여지 유지
